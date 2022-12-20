@@ -40,7 +40,13 @@ const UserSchema = mongoose.Schema({
   debitHistory: [], //credit History
   paylater: { type: Boolean, default: false},
   created_at: { type: Date, default: Date.now },
-  login_at: { type: Date, default: Date.now }
+  login_at: { type: Date, default: Date.now },
+  verified: { type: Boolean, default: false },
+  address1: { type: String, required: true },
+  address2: { type: String, required: false },
+  city: { type: String, required: true },
+  country: { type: String, required: true },
+  zip_code:{ type: String, required: false },
 });
 
 const User = module.exports = mongoose.model('User', UserSchema);

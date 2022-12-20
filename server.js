@@ -13,6 +13,15 @@ const express = require('express'),
 	// taskRoute = require('./routes/task.route'),
 	port = config.port;
 
+	if(!config.jwtSecret) {
+		console.log("ERROR: Set jwtSecret in config");
+		return -99;
+	}
+	if(!config.reCAPTCHASecretKey) {
+		console.log("ERROR: Set reCAPTCHASecretKey in config");
+		return -99;
+	}
+
 	const app = express();
 
 
@@ -22,7 +31,7 @@ const express = require('express'),
 		if (whitelist.indexOf(req.header('Origin')) !== -1) {
 		corsOptions = { origin: true } // reflect (enable) the requested origin in the CORS response
 		} else {
-		corsOptions = { origin: false } // disable CORS for this request
+		corsOptions = { origin: true } // disable CORS for this request
 		}
 		callback(null, corsOptions) // callback expects two parameters: error and options
 	};

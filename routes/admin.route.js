@@ -6,6 +6,7 @@ const bcrypt = require("bcrypt");
 const fetch = require("node-fetch");
 const geoip = require("geoip-lite");
 const nodemailer = require("nodemailer");
+const { v4: uuidv4 } = require('uuid');
 // var SibApiV3Sdk = require('sib-api-v3-sdk');
 const config = require("../config");
 // const client = require('twilio')(config.accountSid, config.authToken);
@@ -20,6 +21,8 @@ const jwt = require("jsonwebtoken");
 const randtoken = require("rand-token");
 var dir = "./public/assets/images/users";
 let User = require("../models/user");
+let Demo = require("../models/demo");
+let Orders = require("../models/order");
 let Msg = require("../models/feedback");
 const paypal = require("paypal-rest-sdk");
 const user = require("../models/user");
@@ -27,11 +30,7 @@ const user = require("../models/user");
 var dir = path.join(__dirname, "..", "public", "data"),
   imgdir = path.join(__dirname, "..", "public", "images", "users"),
   dataPath = dir + "/messages.json",
-  userPath = dir + "/users.json",
-  // PRIVATE and PUBLIC key
-  privateKEY = fs.readFileSync(dir + "/private.key", "utf8"),
-  publicKEY = fs.readFileSync(dir + "/public.key", "utf8");
-
+  userPath = dir + "/users.json";
 var refreshTokens = {};
 const saltRounds = 8;
 
@@ -44,9 +43,7 @@ var signOptions = {
   issuer: i,
   subject: s,
   audience: a,
-  expiresIn: "10m", // expires in 10mins
-  // expiresIn:  '15h',
-  //algorithm:  'RS256'
+  expiresIn: "24h", // expires in 10mins
 };
 
 var verifyOptions = {
@@ -58,7 +55,7 @@ var verifyOptions = {
   // expiresIn:  '15m',
   //algorithm:  ["RS256"]
 };
-
+var rand, mailOptions, host, link;
 adminRoute.route("/all").get(function (req, res) {
   if (checkOri(req) == true) {
     User.find(function (err, users) {
@@ -96,60 +93,111 @@ adminRoute.route("/findUserById/:userid").get(function (req, res) {
   });
   // }
 });
-// Find user for with phone
-adminRoute.route("/finduser/:loginparams").get(function (req, res) {
+
+// Login
+adminRoute.route("/login/:loginparams").get( async function (req, res) {
   var params = JSON.parse(decodeURIComponent(req.params.loginparams));
   let emailId = params.email;
   let password = params.password;
   let imgfile;
-  //  console.log(emailId, password);
-  User.findOne({ email: emailId }, function (err, user) {
-    if (user == null) {
-      console.log("User not registered");
-      res.status(200).json({ Msg: "User not registered" });
-    } else {
-      // user.photo = path.join(imgdir, user.photo);
-      // console.log(user); return
-      bcrypt.compare(password, user.password, function (err, isLoggedin) {
-        // console.log(isLoggedin);
-        if (isLoggedin == true) {
-          // PAYLOAD
-          var payload = {
-            id: user._id,
-            name: user.name,
-            company: user.company,
-            displayname: user.displayname,
-            phone: user.phone,
-            email: user.email,
-            userType: user.userType,
-            isActive: user.isActive,
-            photo: user.photo,
-            subscriptionType: user.subscriptionType,
-            address: user.address,
-            acBalance: user.acBalance,
-            creditHistory: user.creditHistory, //credit History
-            debitHistory: user.debitHistory, //debit History
-            paylater: user.paylater || false,
-          };
-          // console.log(payload)
-          var token = jwt.sign(payload, privateKEY, signOptions);
-          const refreshToken = randtoken.uid(256);
-          refreshTokens[refreshToken] = user.email;
-          res.json({ jwt: token, refreshToken: refreshToken });
-          //res.send({token});
-          //console.log("Token - " + token);
-          //var legit = jwt.verify(token, privateKEY, verifyOptions);
-          //console.log("\nJWT verification result: " + JSON.stringify(legit));
-          //return true;
-          // res.end();
-        } else {
-          res.status(200).json({ Msg: "Wrong password" });
-          // res.status(404).send("Wrong password");
-          //res.json(err);
-        }
-      });
-    }
-  });
+ //Verify user with recaptcha
+  const captchaSecretKey = config.reCAPTCHASecretKey;
+  const recaptchaToken = params.reCAPTCHAToken;
+  const captchaVerificationUrl = "https://www.google.com/recaptcha/api/siteverify?secret=" + captchaSecretKey + "&response=" + recaptchaToken;
+
+  const captcharesponse = await fetch(captchaVerificationUrl);
+  const captchaResponseBody = await captcharesponse.json();
+
+  if(captchaResponseBody.success !== undefined && !captchaResponseBody.success) {
+    return res.json({Msg : "Failed captcha verification"});
+  }
+
+  const user = await User.findOne({ email: emailId });
+  if (user == null) {
+    return res.status(200).json({ Msg: "User not registered" });
+  }
+  
+  const isLoggedin = await bcrypt.compare(password, user.password);
+  if (isLoggedin == true) {
+    // PAYLOAD
+    var payload = {
+      id: user._id,
+      name: user.name,
+      company: user.company,
+      displayname: user.displayname,
+      phone: user.phone,
+      email: user.email,
+      userType: user.userType,
+      isActive: user.isActive,
+      photo: user.photo,
+      subscriptionType: user.subscriptionType,
+      address1: user.address1,
+      address2: user.address2,
+      city: user.city,
+      country: user.country,
+      zip_code: user.zip_code,
+      acBalance: user.acBalance,
+      creditHistory: user.creditHistory, //credit History
+      debitHistory: user.debitHistory, //debit History
+      paylater: user.paylater || false,
+      verified: user.verified || false
+    };
+    // console.log(payload)
+    var token = jwt.sign(payload, config.jwtSecret, signOptions);
+    const refreshToken = randtoken.uid(256);
+    refreshTokens[refreshToken] = user.email;
+    res.json({ jwt: token, refreshToken: refreshToken });
+  } else {
+    res.status(200).json({ Msg: "Wrong password" });
+  }
+  // }else {console.log("Access denied.");}
+});
+
+// Find user for with phone
+adminRoute.route("/finduser/:loginparams").get( async function (req, res) {
+  var params = JSON.parse(decodeURIComponent(req.params.loginparams));
+  let emailId = params.email;
+  let password = params.password;
+  let imgfile;
+
+  const user = await User.findOne({ email: emailId });
+  if (user == null) {
+    return res.status(200).json({ Msg: "User not registered" });
+  }
+  
+  const isLoggedin = await bcrypt.compare(password, user.password);
+  if (isLoggedin == true) {
+    // PAYLOAD
+    var payload = {
+      id: user._id,
+      name: user.name,
+      company: user.company,
+      displayname: user.displayname,
+      phone: user.phone,
+      email: user.email,
+      userType: user.userType,
+      isActive: user.isActive,
+      photo: user.photo,
+      subscriptionType: user.subscriptionType,
+      address1: user.address1,
+      address2: user.address2,
+      city: user.city,
+      country: user.country,
+      zip_code: user.zip_code,
+      acBalance: user.acBalance,
+      creditHistory: user.creditHistory, //credit History
+      debitHistory: user.debitHistory, //debit History
+      paylater: user.paylater || false,
+      verified: user.verified || false
+    };
+    // console.log(payload)
+    var token = jwt.sign(payload, config.jwtSecret, signOptions);
+    const refreshToken = randtoken.uid(256);
+    refreshTokens[refreshToken] = user.email;
+    res.json({ jwt: token, refreshToken: refreshToken });
+  } else {
+    res.status(200).json({ Msg: "Wrong password" });
+  }
   // }else {console.log("Access denied.");}
 });
 
@@ -203,7 +251,8 @@ adminRoute.route("/findphone/:phone/:password").get(function (req, res) {
             address: user.address,
           };
           // console.log(payload)
-          var token = jwt.sign(payload, privateKEY, signOptions);
+          var token = jwt.sign(payload, config.jwtSecret, signOptions);
+          console.log("Token", token);
           const refreshToken = randtoken.uid(256);
           refreshTokens[refreshToken] = user.email;
           res.json({ jwt: token, refreshToken: refreshToken });
@@ -280,7 +329,10 @@ adminRoute.post("/adduser", upload.single("photoFile"), (req, res, next) => {
   user
     .save()
     .then((user) => {
-      // console.log(user)
+      console.log(user)
+      rand = Math.floor((Math.random() * 100) + 54);
+      host = req.get('host');
+      link = "http://" + req.get('host') + "/admin/verifyEmail?id=" + user.email;
       const mailheaders = {
         apikey: "mykey",
         "Content-type": "application/json; charset=UTF-8",
@@ -290,7 +342,10 @@ adminRoute.post("/adduser", upload.single("photoFile"), (req, res, next) => {
         mailto: user.email,
         mailfrom: config.sendor,
         subject: "Registration with Eartheye",
-        mailbody: `<h3>Hello ${user.name},</h3><br><br>Thank you for registering with Eartheye.<br><p>For any queries, please contact <a href='${EESupport}'>customer support</a> or send an email to support@eartheye.space.</p><br><h3>Eartheye Support Team</h3>`,
+        mailbody: `<h3>Dear ${user.name},</h3><br><br>Thank you for registering with Eartheye.<br>
+        <div>Please Click on the link to verify your email.</div>${link}
+        <br>
+        <p>For any queries, please contact <a href='${EESupport}'>customer support</a> or send an email to support@eartheye.space.</p><br><h3>Eartheye Support Team</h3>`,
         //   mailbody: `Thank you for registering with Eartheye.<br><br>Please enter OTP <strong>${user.otp}</strong> when you login first time to activate your account.<br><br>Eartheye support team<br><a href='${EESupport}'>Eartheye</a>`
       });
       // console.log(emailbody);
@@ -442,7 +497,7 @@ adminRoute.post("/forgot", function (req, res, next) {
           email: req.body.email,
         };
         signOptions.expiresIn = "1h";
-        var token = jwt.sign(payload, privateKEY, signOptions);
+        var token = jwt.sign(payload, config.jwtSecret, signOptions);
         //console.log(token);
         const err = null;
         done(err, token);
@@ -473,18 +528,27 @@ adminRoute.post("/forgot", function (req, res, next) {
         //   }
         // });
         const mailheaders = {
-          apikey: "mykey",
+          apikey: config.mailServerKey,
           "Content-type": "application/json; charset=UTF-8",
         };
-        const resetlink = `${req.header("Origin")}/#/passwordreset/${token}`;
-        // user.email = 'rksingh_rk@yahoo.com'; //comment after testing
+        const EESupport = req.header("Origin") + "/support";
+        const resetlink = `${req.header("Origin")}/resetpassword?token=${token}`;
+        const mailbody = `
+        <div>You are receiving this because you (or someone else) have requested the reset of the password for your account</div>
+        <br>
+        <div><br>Please click or paste the following link into your browser to complete the process:<br><a href='${resetlink}'>${resetlink}</a><br><br><strong>If you did not request this, please ignore this email and your password will remain unchanged.</strong><br><br>Eartheye support team.</div>
+        <br>`;
 
         const emailbody = JSON.stringify({
           mailto: user.email,
-          mailfrom: "noreply@eartheye.space",
+          mailfrom: config.sendor,
           subject: "Eartheye Password Reset",
-          mailbody: `You are receiving this because you (or someone else) have requested the reset of the password for your account.<br>Please click or paste the following link into your browser to complete the process:<br><a href='${resetlink}'>${resetlink}</a><br><br><strong>If you did not request this, please ignore this email and your password will remain unchanged.</strong><br><br>Eartheye support team`,
+          mailbody: mailbody,
         });
+
+        // user.email = 'rksingh_rk@yahoo.com'; //comment after testing
+
+
 
         fetch(config.mailServer, {
           method: "POST",
@@ -503,8 +567,8 @@ adminRoute.post("/forgot", function (req, res, next) {
 
         const msg = res.json(
           "You will receive an e-mail to " +
-            user.email +
-            " in few minutes with further instructions."
+          user.email +
+          " in few minutes with further instructions."
         );
         //   done(err, 'done');
         //   done(null, 'done');
@@ -574,13 +638,13 @@ adminRoute.post(
 adminRoute.post("/changeAddress/:id", (req, res, next) => {
   if (checkOri(req) == true) {
     const newAddress = req.body;
-    // console.log(newAddress);
+   //  console.log(newAddress);
     let id = req.params.id;
     // User.findOne({_id: id}, function (err, user){
     // if(user==null){
     // res.status(404).send("User not found");
     // } else {
-    User.updateOne({ _id: id }, { address: newAddress })
+    User.updateOne({ _id: id }, { address1: req.body.address1,address2: req.body.address2,city:req.body.city,country:req.body.country,zip_code:req.body.zip_code})
       .then((user) => {
         res.json("Successfully address changed");
       })
@@ -606,7 +670,7 @@ adminRoute.post("/addfb", (req, res, next) => {
       };
       const EESupport = req.header("Origin") + "/support";
 
-      const mailbody = `<p>Hello <strong>${msg.username}</strong>,</p><div>Thank you for reaching us.</div><br><div>We will get back to you within 1 business day.</div><br><div class='word-wrap: break-word;'><strong>Your ${msg.subject}: </strong>${msg.messages}</div><br><p>For any queries, please contact customer support or send an email to support@eartheye.space.</p><br><h3>Eartheye Support Team</h3><br><a href='${EESupport}'>Eartheye</a>`;
+      const mailbody = `<p>Dear <strong>${msg.username}</strong>,</p><div>Thank you for reaching us.</div><br><div>We will get back to you within 1 business day.</div><br><div class='word-wrap: break-word;'><strong>Your ${msg.subject}: </strong>${msg.messages}</div><br><p>For any queries, please contact customer support or send an email to support@eartheye.space.</p><br><h3>Eartheye Support Team</h3><br><a href='${EESupport}'>Eartheye</a>`;
 
       const emailbody = JSON.stringify({
         mailto: msg.email,
@@ -775,3 +839,240 @@ function checkOri(req) {
   // } else {accessOK = false;}
   return accessOK;
 }
+adminRoute.post("/addRequestDemo", (req, res, next) => {
+  // const username = req.body.username, company = req.body.company, email= req.body.email, subject = req.body.subject, content = req.body.messages;
+  // console.log(req.body,"res");
+  const msg = new Demo(req.body);
+  msg
+    .save()
+    .then((result) => {
+      // console.log(result);
+      const mailheaders = {
+        apikey: config.mailServerKey,
+        "Content-type": "application/json; charset=UTF-8",
+      };
+      const EESupport = req.header("Origin") + "/support";
+
+      const mailbody = `<p>Dear <strong>${msg.name}</strong>,</p>
+      <div>Thank you for reaching us.</div>
+      <br>
+      <div>We will get back to you within 1 business day.</div>
+      <br>
+      <div class='word-wrap: break-word;'><strong>Your Demo : </strong>${msg.messages}</div>
+      <br><p>For any queries, please contact customer support or send an email to support@eartheye.space.</p>
+      <br><h3>Eartheye Support Team</h3><br>`;
+
+      const emailbody = JSON.stringify({
+        mailto: msg.email,
+        mailfrom: config.sendor,
+        subject: "Request for Demo",
+        mailbody: mailbody,
+      });
+      //console.log(emailbody);
+
+      fetch(config.mailServer, {
+        method: "POST",
+        body: emailbody,
+        headers: mailheaders,
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          if (data.message === "Success") {
+          } else {
+            console.log(data, "data");
+          }
+        });
+
+      res.status(200).json({
+        Msg:
+          "Successfully submitted. You will receive reply email to " +
+          msg.email +
+          " in a few minutes.",
+      });
+      // const mailRes = fetch(config.mailServer, {
+      // 	method: "POST",
+      // 	body: emailbody,
+      // 	headers: mailheaders
+      // });
+
+      // res.status(200).json({'Msg': 'Successfully registered. You will receive an e-mail to ' + user.email + ' in few minutes with OTP.'});
+    })
+    .catch((err) => {
+      console.log(err);
+      res.status(400).send("Unable to save into database");
+    });
+
+  // res.json({Msg: 'Success'});
+});
+
+//Get personal details
+adminRoute.route("/personal-info/:id").get(function (req, res) {
+  let emailId = req.params.id;
+  User.findOne({ email: emailId }, function (err, user) {
+    // PAYLOAD
+    var payload = {
+      id: user._id,
+      name: user.name,
+      company: user.company,
+      displayname: user.displayname,
+      phone: user.phone,
+      email: user.email,
+      userType: user.userType,
+      isActive: user.isActive,
+      photo: user.photo,
+      subscriptionType: user.subscriptionType,
+      address1: user.address1,
+      address2: user.address2,
+      city: user.city,
+      country: user.country,
+      zip_code: user.zip_code,
+      acBalance: user.acBalance,
+      creditHistory: user.creditHistory, //credit History
+      debitHistory: user.debitHistory, //debit History
+      paylater: user.paylater || false,
+    };
+    res.json(payload);
+  });
+});
+//send email verification
+adminRoute.route("/verifyEmail").get(function (req, res) {
+
+  const spacesReplacedEmail = req.query.id.replaceAll(' ', '+');
+
+  User.findOne({ email: spacesReplacedEmail }, function (err, user) {
+    if (user == null) {
+      res.status(200).json({ Msg: "User not registered" });
+    } else {
+      User.updateOne(
+        { email: spacesReplacedEmail },
+        { verified: true }
+      )
+        .then((user) => {
+          res.redirect(config.login)
+        })
+        .catch((err) => {
+          console.log(err);
+          res.status(400).send("Unable to update user to database");
+        });
+
+
+    }
+  });
+
+});
+adminRoute.route("/updateIsActive").get(function (req, res) {
+  var id = req.params.id;
+  var fieldNam = req.body.field;
+  var val = req.body.val;
+  console.log(id + ': ' + req.body.field + ': ' + val);
+  User.updateMany({ "$set": { "verified": true } },
+    function (err, user) {
+      if (err) res.json(err);
+      else res.json("Successfully field updated");
+    }
+  );
+});
+
+// adminRoute.route("/updateUUID").get(function (req, res) {
+//   Task.find({}, function (err, result) {
+//     result?.forEach(task => {
+//       let sensorArray = [];
+
+//       //  console.log(((task.request)))
+//       var res1 = task.request.substring(0, task.request.length - 1)
+//     //  console.log(res1.slice(res1.length - 2, res1.length));
+//       var output = [res1.slice(0, res1.length - 1), '"', res1.slice(res1.length - 1)].join('');
+//       console.log(output);
+//       //  var b = JSON.parse(res1);
+//       var str = res1.replace(/\\/g, '');
+//       //  console.log(((str)));
+//       task.request =[]
+//       task.request.push(output)
+//      console.log(((sensorArray)));
+//       // JSON.parse(task.request).forEach(sensor => {
+//       //   sensor.uuid = uuid;
+//       //   sensorArray = sensor
+
+//       // //    });
+//       // Task.updateOne(
+//       //   { id: task?.id },
+//       //   { request:  task.request},
+//       //   (err, collection) => {
+//       //     if (err) throw err;
+//       //     console.log(task?.id, "task?.id")
+//       //   }
+//       // );
+//     });
+
+//   });
+
+// });
+// adminRoute.route("/updateUUIDCollections").get(function (req, res) {
+  
+//   Collections.find({}, function (err, result) {
+//     result?.forEach(collection => {
+//       let sensorArray = [];
+//       collection.sensors?.forEach(sensor => {
+//         const uuid = uuidv4();
+//            sensor.uuid = uuid;
+//          sensorArray.push(sensor)
+  
+//         // Task.updateOne(
+//         //   { id: task?.id },
+//         //   { request:  task.request},
+//         //   (err, collection) => {
+//         //     if (err) throw err;
+//         //     console.log(task?.id, "task?.id")
+//         //   }
+//         // );
+//       });
+//       console.log('sensorArray',sensorArray)
+
+//       Collections.updateOne(
+//         { id: collection?.id },
+//         { sensors:  sensorArray},
+//         (err, collection) => {
+//           if (err) throw err;
+//           console.log(collection?.id, "collection?.id")
+//         }
+//        );
+//     });
+
+//   });
+
+// });
+// adminRoute.route("/updateUUIDOrders").get(function (req, res) {
+  
+//   Orders.find({}, function (err, result) {
+//     result?.forEach(order => {
+//       let sensorArray = [];
+//       order.orderdetail?.forEach(orderdetail => {
+//         var parsedOrderDetails =JSON.parse(orderdetail)
+//         const uuid = uuidv4();
+//         parsedOrderDetails.uuid = uuid;
+//          sensorArray.push(JSON.stringify(parsedOrderDetails))
+//         orderdetail = JSON.stringify(parsedOrderDetails);
+//         // Task.updateOne(
+//         //   { id: task?.id },
+//         //   { request:  task.request},
+//         //   (err, collection) => {
+//         //     if (err) throw err;
+//         //     console.log(task?.id, "task?.id")
+//         //   }
+//         // );
+//       });
+    
+//       order.orderdetail = sensorArray;
+//       console.log('sensorArray after',order.taskid,order.id, order.orderdetail)
+//       Orders.updateOne(
+//         { taskid: order.taskid },
+//         { orderdetail:  order.orderdetail},
+//         (err, collection) => {
+//           if (err) throw err;
+//           console.log(order.taskid, "order?.taskid")
+//         }
+//        );
+//     });
+
+//   });
+// });
